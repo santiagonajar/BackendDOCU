@@ -148,14 +148,20 @@ class LLMService:
             contents.append(types.Part.from_bytes(data=data, mime_type=mime or "image/jpeg"))
         contents.append("Fin de la nota. Devuelve el JSON del resumen de TODA la nota.")
 
-        result = await self._generate_json(contents, temperature=0.2)
+        result = await self._generate_json(contents, temperature=0.3)
 
-        # Validación estricta de usabilidad: si la IA detecta que no es documento válido
+        # RELAJAMOS LA VALIDACIÓN: Si la IA duda pero tiene contenido, evitamos un rechazo falso
+        # Solo lo rechazamos si explícitamente se confirma que es una foto ajena (ej. paisajes, objetos)
         if result.get("es_documento_valido") is False:
-            raise HTTPException(
-                status_code=400,
-                detail="La foto no se puede analizar porque no corresponde a una nota de alta del IMSS. Por favor, tome una foto válida.",
-            )
+            # Verificamos si al menos trajo diagnóstico o paciente para salvar el documento legítimo
+            if not result.get("paciente_nombre") or result.get("paciente_nombre") == "No aparece en el documento":
+                raise HTTPException(
+                    status_code=400,
+                    detail="La foto no se puede analizar porque no corresponde a una nota de alta del IMSS. Por favor, tome una foto válida.",
+                )
+            else:
+                # Si recuperó datos, forzamos la validez para que no bloquee al usuario
+                result["es_documento_valido"] = True
 
         return result
 
