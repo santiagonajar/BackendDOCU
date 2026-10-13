@@ -15,65 +15,54 @@ MODEL_NAME = "models/gemini-3.6-flash"
 PageData = Tuple[bytes, str]
 
 # ─────────────────────────────────────────────────────────────
-# PROMPT 1: leer la nota y validar si es un documento del IMSS válido
+# PROMPT 1: LEER Y RESUMIR NOTA DE EGRESO
 # ─────────────────────────────────────────────────────────────
 PROMPT = """
-Eres un asistente que verifica y explica Notas de Egreso / Hojas de Alta del IMSS a adultos mayores y a sus cuidadores.
-Las imágenes que recibes son las páginas, EN ORDEN, de UNA SOLA nota de egreso de UN solo paciente.
+Eres un asistente médico experto que analiza y resume Hojas de Alta / Notas de Egreso médicas (del IMSS o instituciones de salud) para pacientes y sus familias.
+Las imágenes que recibes son las páginas, EN ORDEN, de UNA sola nota de egreso.
 
-PASO OBLIGATORIO DE VALIDACIÓN:
-Analiza detenidamente las imágenes para determinar si corresponden a una Nota de Egreso o documento oficial de alta médica del IMSS.
-- Si la imagen NO es una nota de alta del IMSS (por ejemplo, es una foto cualquiera, una credencial, un paisaje, un recibo ajeno o cualquier otro documento que no sea médico), DEBES establecer el campo "es_documento_valido" en false.
-- Si SÍ es un documento de alta o nota médica del IMSS, establece "es_documento_valido" en true y llena los demás campos normalmente.
+REGLA DE VALIDACIÓN:
+- "es_documento_valido": Pon `true` para cualquier documento médico, hoja de alta, resumen clínico, receta o foto de hoja impresa con texto.
+- ÚNICAMENTE pon `false` si la imagen es algo completamente ajeno al ámbito médico o sin texto alguno (por ejemplo: un carro, una mascota, un paisaje, un objeto cualquiera, una pantalla en negro o una selfie).
 
-ESTILO (si es válido):
-- Español sencillo, frases cortas, sin tecnicismos. Habla directo al paciente.
-- Respuestas MUY breves y orientadas a la acción.
-- Cada acción empieza con un verbo en imperativo (Tome, Acuda, Saque, Evite, Regrese...).
+ESTILO DE REDACCIÓN:
+- Español sencillo, claro y empático. Sin tecnicismos ni jerga médica compleja.
+- Instrucciones directas orientadas a la acción (usando verbos claros: Tome, Acuda, Asista, Evite, Guarde).
+- Respuestas breves y fáciles de entender para un adulto mayor.
+- OMITE por completo resultados detallados de laboratorio, escalas clínicas y valores técnicos paraclínicos.
 
-OMITE por completo laboratorios, paraclínicos y escalas clínicas.
-
-REGLAS POR CAMPO:
-- es_documento_valido: true o false según la validación anterior.
-- paciente_nombre: Nombre completo del paciente o "No aparece en el documento" si no es válido.
-- fecha_egreso: Fecha de alta o "No aparece en el documento".
-- diagnostico_simplificado: Si no es válido, escribe exactamente: "La foto no se puede analizar porque no corresponde a una nota de alta del IMSS."
-- medicamentos: Lista vacía [] si no es válido.
-- siguientes_pasos: Lista vacía [] si no es válido.
-- cuidados: Lista vacía [] si no es válido.
-- senales_de_alarma: Lista vacía [] si no es válido.
-
-Responde EXCLUSIVAMENTE con un JSON válido que cumpla este esquema:
+FORMATO DE SALIDA:
+Responde EXCLUSIVAMENTE con un JSON válido con esta estructura exacta:
 
 {
   "es_documento_valido": true,
-  "paciente_nombre": "Nombre completo del paciente en mayúsculas",
-  "fecha_egreso": "Fecha de alta (Ej. 05 de Agosto de 2026)",
-  "diagnostico_simplificado": "Máximo 2 frases cortas",
+  "paciente_nombre": "Nombre del paciente en mayúsculas (o 'Paciente' si no es visible)",
+  "fecha_egreso": "Fecha de alta o fecha visible en la hoja",
+  "diagnostico_simplificado": "Explicación breve (máximo 2 frases) en palabras sencillas de la razón de hospitalización y su estado",
   "medicamentos": [
     {
-      "nombre": "Nombre y presentación",
-      "dosis_instrucciones": "Dosis y frecuencia en una línea",
-      "observaciones": "Solo si es indispensable, o null"
+      "nombre": "Nombre del medicamento y presentación",
+      "dosis_instrucciones": "Dosis y horarios en una sola línea",
+      "observaciones": "Indicación especial o null"
     }
   ],
   "siguientes_pasos": [
     {
-      "lugar_o_servicio": "Servicio o unidad",
-      "accion": "Acción corta con verbo"
+      "lugar_o_servicio": "Servicio médico o consultorio al que debe acudir",
+      "accion": "Acción clara a realizar"
     }
   ],
   "cuidados": [
-    "Cuidado en casa corto, con verbo"
+    "Cuidado o recomendación general en casa"
   ],
   "senales_de_alarma": [
-    "Síntoma corto para ir a Urgencias"
+    "Síntoma clave por el cual debería regresar a Urgencias"
   ]
 }
 """
 
 SIMPLIFY_PROMPT = """
-Eres un asistente que ayuda a adultos mayores a entender su hoja de alta del IMSS.
+Eres un asistente que ayuda a adultos mayores a entender su hoja de alta.
 Recibes el RESUMEN (en JSON) de una hoja de alta. Vuelve a explicarlo en nivel PRINCIPIANTE.
 
 Responde EXCLUSIVAMENTE con un JSON válido con este esquema:
@@ -148,20 +137,14 @@ class LLMService:
             contents.append(types.Part.from_bytes(data=data, mime_type=mime or "image/jpeg"))
         contents.append("Fin de la nota. Devuelve el JSON del resumen de TODA la nota.")
 
-        result = await self._generate_json(contents, temperature=0.3)
+        result = await self._generate_json(contents, temperature=0.2)
 
-        # RELAJAMOS LA VALIDACIÓN: Si la IA duda pero tiene contenido, evitamos un rechazo falso
-        # Solo lo rechazamos si explícitamente se confirma que es una foto ajena (ej. paisajes, objetos)
+        # Solo si la IA explícitamente detectó un objeto/foto random no médico marcamos error 400
         if result.get("es_documento_valido") is False:
-            # Verificamos si al menos trajo diagnóstico o paciente para salvar el documento legítimo
-            if not result.get("paciente_nombre") or result.get("paciente_nombre") == "No aparece en el documento":
-                raise HTTPException(
-                    status_code=400,
-                    detail="La foto no se puede analizar porque no corresponde a una nota de alta del IMSS. Por favor, tome una foto válida.",
-                )
-            else:
-                # Si recuperó datos, forzamos la validez para que no bloquee al usuario
-                result["es_documento_valido"] = True
+            raise HTTPException(
+                status_code=400,
+                detail="La foto no se puede analizar porque no corresponde a una nota de alta. Por favor, toma una foto clara de tu documento.",
+            )
 
         return result
 
