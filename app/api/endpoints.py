@@ -14,10 +14,6 @@ llm_service = LLMService()
 MAX_PAGES = 10  # igual que en el frontend
 
 
-# ------------------------------------------------------------------
-# Endpoint 1: Verificación de Variables de Entorno (.env)
-# OJO: bórralo o protégelo antes de publicar la app.
-# ------------------------------------------------------------------
 @router.get("/test-config")
 def test_config():
     key_preview = settings.GEMINI_API_KEY[:8] + "..." if settings.GEMINI_API_KEY else "No encontrada"
@@ -37,10 +33,6 @@ def test_config():
     }
 
 
-# ------------------------------------------------------------------
-# Endpoint 2: Procesa TODAS las páginas de una misma nota en una sola petición
-# El campo del formulario se llama "files" (puede repetirse varias veces).
-# ------------------------------------------------------------------
 @router.post("/process-document", response_model=ResumenNotaEgreso)
 async def process_document(files: List[UploadFile] = File(...)):
     if not files:
@@ -59,9 +51,7 @@ async def process_document(files: List[UploadFile] = File(...)):
             )
 
     try:
-        # Se conserva el orden en que llegaron las páginas
         pages = [(await f.read(), f.content_type) for f in files]
-
         return await llm_service.analyze_discharge_note(pages)
 
     except HTTPException:
@@ -79,17 +69,10 @@ async def process_document(files: List[UploadFile] = File(...)):
         )
 
 
-# ------------------------------------------------------------------
-# Endpoint 3: "No, explícamelo más fácil"
-# Recibe el resumen estructurado (JSON) y devuelve una explicación nivel principiante.
-# No vuelve a enviar las imágenes: solo el texto ya resumido.
-# ------------------------------------------------------------------
 @router.post("/simplify-further", response_model=ResumenSimplificado)
 async def simplify_further(resumen: ResumenNotaEgreso):
     try:
-        # Compatible con Pydantic v1 y v2
         data = resumen.model_dump() if hasattr(resumen, "model_dump") else resumen.dict()
-
         return await llm_service.simplify_summary(data)
 
     except HTTPException:
